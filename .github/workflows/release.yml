@@ -1,8 +1,17 @@
 name: LiveKit dependency distribution
 on:
   push:
+    branches: [main]
     tags: ["livekit-v*-ash.*"]
+    paths: &recipe-paths
+      - "build-inputs.json"
+      - "upstream-lock.json"
+      - "build_release.py"
+      - "test_build_release.py"
+      - "LIVEKIT-*"
+      - ".github/workflows/**"
   pull_request:
+    paths: *recipe-paths
   workflow_dispatch:
   schedule:
     - cron: "41 3 * * 0"
@@ -49,8 +58,11 @@ jobs:
           source = json.loads(Path('build-inputs.json').read_text(encoding='utf-8'))['buildHarness']
           assert source['repository'] == 'chogng/ash'
           assert re.fullmatch('[0-9a-f]{40}', source['revision'])
+          go = json.loads(Path('build-inputs.json').read_text(encoding='utf-8'))['goVersion']
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', go)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('revision=' + source['revision'] + '\n')
+              output.write('go_version=' + go + '\n')
           PY
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -61,7 +73,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         if: runner.os == 'macOS'
         with:
-          go-version: "1.26"
+          go-version: ${{ steps.source.outputs.go_version }}
           cache: false
       - name: Test release integrity boundaries
         run: python -B -m unittest -v test_build_release

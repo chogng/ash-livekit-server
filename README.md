@@ -9,6 +9,9 @@ and upstream source; Windows/Linux import the verified official executables.
 Every native job checks the server version before packaging the executable and
 upstream notices. Release aggregation verifies all six archives before generating
 the consumer lock. Tags use `livekit-v<version>-ash.<revision>`.
+`releaseRevision` permits a new distribution of the same upstream version without
+replacing an existing release. `goVersion` pins the exact patch version; native
+macOS jobs verify it and record it in the build provenance.
 
 Main pushes and pull requests validate without publishing. A dependency tag
 publishes immutable archives, provenance, checksums and `runtime-lock.json`.

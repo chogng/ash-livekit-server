@@ -1,5 +1,7 @@
 {
   "schemaVersion": 1,
+  "releaseRevision": 1,
+  "goVersion": "1.26.11",
   "buildHarness": {
     "repository": "chogng/ash",
     "revision": "5d8d3d2119b87d775142e4b3df8a69517903a851"

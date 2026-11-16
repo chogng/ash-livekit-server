@@ -27,7 +27,10 @@ def release_tag(lock):
     version = lock["version"]
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise ValueError("Invalid upstream version")
-    return f"livekit-v{version}-ash.1"
+    revision = read(ROOT / "build-inputs.json")["releaseRevision"]
+    if type(revision) is not int or revision <= 0:
+        raise ValueError("Invalid distribution revision")
+    return f"livekit-v{version}-ash.{revision}"
 
 
 def package(binary, notices, target, lock, output, repository):
@@ -63,6 +66,11 @@ def package(binary, notices, target, lock, output, repository):
         "target": target,
         "upstream": lock["source"],
         "buildHarness": read(ROOT / "build-inputs.json")["buildHarness"],
+        "goVersion": (
+            read(ROOT / "build-inputs.json")["goVersion"]
+            if target.endswith("-apple-darwin")
+            else None
+        ),
         "binarySha256": digest(binary),
     }
     (output / f"{target}.provenance.json").write_text(
@@ -90,6 +98,12 @@ def aggregate(directory, lock):
             or provenance["upstream"] != lock["source"]
             or provenance["buildHarness"]
             != read(ROOT / "build-inputs.json")["buildHarness"]
+            or provenance["goVersion"]
+            != (
+                read(ROOT / "build-inputs.json")["goVersion"]
+                if target.endswith("-apple-darwin")
+                else None
+            )
         ):
             raise ValueError("Mixed build inputs")
         with tarfile.open(archive) as tar:
@@ -147,6 +161,14 @@ def main():
     ).strip()
     if revision != read(ROOT / "build-inputs.json")["buildHarness"]["revision"]:
         raise ValueError("Build harness revision does not match the pin")
+    if args.target.endswith("-apple-darwin"):
+        go_version = subprocess.check_output(
+            ["go", "env", "GOVERSION"],
+            text=True,
+            env={**os.environ, "GOTOOLCHAIN": "local"},
+        ).strip()
+        if go_version != "go" + read(ROOT / "build-inputs.json")["goVersion"]:
+            raise ValueError("Go toolchain version does not match the pin")
     resolved = subprocess.check_output(
         [sys.executable, "-B", str(source / "build/lib/livekit.py"), args.target],
         cwd=source,
