@@ -1,0 +1,114 @@
+name: LiveKit dependency distribution
+on:
+  push:
+    tags: ["livekit-v*-ash.*"]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 3 * * 0"
+permissions:
+  contents: read
+concurrency:
+  group: livekit-dependency-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  build:
+    name: Native server (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+      - name: Validate immutable build source
+        id: source
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          source = json.loads(Path('build-inputs.json').read_text(encoding='utf-8'))['buildHarness']
+          assert source['repository'] == 'chogng/ash'
+          assert re.fullmatch('[0-9a-f]{40}', source['revision'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('revision=' + source['revision'] + '\n')
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: chogng/ash
+          ref: ${{ steps.source.outputs.revision }}
+          path: build-source
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        if: runner.os == 'macOS'
+        with:
+          go-version: "1.26"
+          cache: false
+      - name: Test release integrity boundaries
+        run: python -B -m unittest -v test_build_release
+      - name: Prepare, execute and package the native server
+        run: python -B build_release.py build --source build-source --target ${{ matrix.target }} --output dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: livekit-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+  verify:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: livekit-*
+          path: dist
+          merge-multiple: true
+      - name: Verify all targets and generate the exact consumer lock
+        run: python3 -B build_release.py aggregate --output dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: livekit-release
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+  publish:
+    needs: verify
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/livekit-v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: livekit-release
+          path: dist
+      - name: Publish the immutable dependency release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY"
+          --verify-tag --latest=false --title "$RELEASE_TAG"
+          --notes "Native-version-verified LiveKit Server archives for six targets. Includes exact archive hashes, upstream and build-harness provenance, and the consumer runtime-lock.json."
