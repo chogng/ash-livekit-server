@@ -1,4 +1,4 @@
-"""Build immutable LiveKit inputs using the pinned upstream and build harness."""
+"""Build immutable LiveKit inputs using this repository and its pinned upstream."""
 
 import argparse
 import gzip
@@ -9,8 +9,9 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import sys
 import tarfile
+
+from producer import resolve_livekit
 
 ROOT = Path(__file__).resolve().parent
 
@@ -31,6 +32,28 @@ def release_tag(lock):
     if type(revision) is not int or revision <= 0:
         raise ValueError("Invalid distribution revision")
     return f"livekit-v{version}-ash.{revision}"
+
+
+def recipe():
+    # Content-address the complete producer closure so aggregation rejects jobs
+    # built from different scripts, locks or upstream notices.
+    return {
+        "schemaVersion": 1,
+        "inputs": {
+            name: digest(ROOT / name)
+            for name in (
+                ".gitattributes",
+                "build_release.py",
+                "producer.py",
+                "artifacts.py",
+                "file_lock.py",
+                "build-inputs.json",
+                "upstream-lock.json",
+                "LIVEKIT-LICENSE",
+                "LIVEKIT-NOTICE",
+            )
+        },
+    }
 
 
 def package(binary, notices, target, lock, output, repository):
@@ -65,7 +88,7 @@ def package(binary, notices, target, lock, output, repository):
     provenance = {
         "target": target,
         "upstream": lock["source"],
-        "buildHarness": read(ROOT / "build-inputs.json")["buildHarness"],
+        "buildRecipe": recipe(),
         "goVersion": (
             read(ROOT / "build-inputs.json")["goVersion"]
             if target.endswith("-apple-darwin")
@@ -96,8 +119,7 @@ def aggregate(directory, lock):
         if (
             provenance["target"] != target
             or provenance["upstream"] != lock["source"]
-            or provenance["buildHarness"]
-            != read(ROOT / "build-inputs.json")["buildHarness"]
+            or provenance["buildRecipe"] != recipe()
             or provenance["goVersion"]
             != (
                 read(ROOT / "build-inputs.json")["goVersion"]
@@ -135,7 +157,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["build", "aggregate"])
     parser.add_argument("--target")
-    parser.add_argument("--source", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     lock = read(ROOT / "upstream-lock.json")
@@ -146,35 +167,13 @@ def main():
     if args.command == "aggregate":
         aggregate(args.output, lock)
         return
-    if (
-        not args.source
-        or not args.target
-        or args.target
-        not in {"aarch64-apple-darwin", "x86_64-apple-darwin", *lock["artifacts"]}
-    ):
-        parser.error("A source checkout and supported target are required")
-    source = args.source.resolve()
-    if read(source / "third_party/livekit/runtime-lock.json") != lock:
-        raise ValueError("Pinned build harness has different upstream inputs")
-    revision = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=source, text=True
-    ).strip()
-    if revision != read(ROOT / "build-inputs.json")["buildHarness"]["revision"]:
-        raise ValueError("Build harness revision does not match the pin")
-    if args.target.endswith("-apple-darwin"):
-        go_version = subprocess.check_output(
-            ["go", "env", "GOVERSION"],
-            text=True,
-            env={**os.environ, "GOTOOLCHAIN": "local"},
-        ).strip()
-        if go_version != "go" + read(ROOT / "build-inputs.json")["goVersion"]:
-            raise ValueError("Go toolchain version does not match the pin")
-    resolved = subprocess.check_output(
-        [sys.executable, "-B", str(source / "build/lib/livekit.py"), args.target],
-        cwd=source,
-        text=True,
-    )
-    binary = Path(json.loads(resolved)["executable"])
+    if not args.target or args.target not in {
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        *lock["artifacts"],
+    }:
+        parser.error("A supported native target is required")
+    binary = resolve_livekit(args.target)
     version = subprocess.check_output([str(binary), "--version"], text=True).strip()
     if version != "livekit-server version " + lock["version"]:
         raise ValueError("Built server has an unexpected version")

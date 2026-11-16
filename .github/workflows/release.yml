@@ -7,14 +7,15 @@ on:
       - "build-inputs.json"
       - "upstream-lock.json"
       - "build_release.py"
+      - "producer.py"
+      - "artifacts.py"
+      - "file_lock.py"
       - "test_build_release.py"
       - "LIVEKIT-*"
       - ".github/workflows/**"
   pull_request:
     paths: *recipe-paths
   workflow_dispatch:
-  schedule:
-    - cron: "41 3 * * 0"
 permissions:
   contents: read
 concurrency:
@@ -48,28 +49,18 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.12"
-      - name: Validate immutable build source
+      - name: Validate pinned build tools
         id: source
         shell: bash
         run: |
           python - <<'PY'
           import json, os, re
           from pathlib import Path
-          source = json.loads(Path('build-inputs.json').read_text(encoding='utf-8'))['buildHarness']
-          assert source['repository'] == 'chogng/ash'
-          assert re.fullmatch('[0-9a-f]{40}', source['revision'])
           go = json.loads(Path('build-inputs.json').read_text(encoding='utf-8'))['goVersion']
           assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', go)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('revision=' + source['revision'] + '\n')
               output.write('go_version=' + go + '\n')
           PY
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: chogng/ash
-          ref: ${{ steps.source.outputs.revision }}
-          path: build-source
-          persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         if: runner.os == 'macOS'
         with:
@@ -78,7 +69,7 @@ jobs:
       - name: Test release integrity boundaries
         run: python -B -m unittest -v test_build_release
       - name: Prepare, execute and package the native server
-        run: python -B build_release.py build --source build-source --target ${{ matrix.target }} --output dist
+        run: python -B build_release.py build --target ${{ matrix.target }} --output dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: livekit-${{ matrix.target }}
